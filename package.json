@@ -1,0 +1,54 @@
+{
+  "name": "zhihu-sidebar",
+  "displayName": "Zhihu Sidebar",
+  "description": "在 VSCode 底部面板中查看知乎热榜内容。",
+  "version": "0.0.1",
+  "publisher": "local",
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:zhihuSidebar.view",
+    "onCommand:zhihuSidebar.refresh"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "zhihuSidebar.refresh",
+        "title": "刷新知乎内容"
+      }
+    ],
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "zhihuSidebar",
+          "title": "Zhihu",
+          "icon": "media/zhihu.svg"
+        }
+      ]
+    },
+    "views": {
+      "zhihuSidebar": [
+        {
+          "id": "zhihuSidebar.view",
+          "name": "知乎热榜",
+          "type": "webview"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "build": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.5.4"
+  }
+}
