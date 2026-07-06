@@ -1,18 +1,26 @@
-export interface ZhihuHotItem {
-  title: string;
-  excerpt: string;
-  url: string;
-}
-
 import * as vscode from 'vscode';
 import { execFile } from 'node:child_process';
 
+export interface ZhihuRecommendationItem {
+  id: string;
+  title: string;
+  excerpt: string;
+  detail: string;
+  author: string;
+  authorHeadline: string;
+  url: string;
+}
+
+export interface ZhihuRecommendationPage {
+  items: ZhihuRecommendationItem[];
+  nextPage: number | null;
+}
+
 const RECOMMENDATION_API_URL =
-  'https://www.zhihu.com/api/v3/feed/topstory/recommend?desktop=true&page_number=1';
+  'https://www.zhihu.com/api/v3/feed/topstory/recommend';
 const CACHE_TTL = 5 * 60 * 1000;
 
-let cachedItems: ZhihuHotItem[] | undefined;
-let cachedAt = 0;
+const pageCache = new Map<number, { data: ZhihuRecommendationPage; cachedAt: number }>();
 
 export class MissingCookieError extends Error {
   constructor() {
@@ -21,21 +29,23 @@ export class MissingCookieError extends Error {
   }
 }
 
-export async function getZhihuHotList(): Promise<ZhihuHotItem[]> {
+export async function getZhihuRecommendationPage(
+  page: number
+): Promise<ZhihuRecommendationPage> {
   const cookie = getZhihuCookie();
 
   if (!cookie) {
     throw new MissingCookieError();
   }
 
+  const cached = pageCache.get(page);
   const now = Date.now();
 
-  // 简单缓存，避免你每次点开面板都重复打一次知乎接口。
-  if (cachedItems && now - cachedAt < CACHE_TTL) {
-    return cachedItems;
+  if (cached && now - cached.cachedAt < CACHE_TTL) {
+    return cached.data;
   }
 
-  const raw = await requestZhihuRecommendation(cookie);
+  const raw = await requestZhihuRecommendation(cookie, page);
 
   if (raw.error) {
     throw new Error(raw.error.message || '知乎接口返回了错误。');
@@ -43,12 +53,23 @@ export async function getZhihuHotList(): Promise<ZhihuHotItem[]> {
 
   const items = (raw.data || [])
     .map(mapRecommendationItem)
-    .filter((item): item is ZhihuHotItem => item !== null);
+    .filter((item): item is ZhihuRecommendationItem => item !== null);
 
-  cachedItems = items;
-  cachedAt = now;
+  const data = {
+    items,
+    nextPage: getNextPage(raw.paging, page, items.length)
+  };
 
-  return items;
+  pageCache.set(page, {
+    data,
+    cachedAt: now
+  });
+
+  return data;
+}
+
+export function clearZhihuRecommendationCache() {
+  pageCache.clear();
 }
 
 export function isMissingCookieError(error: unknown): error is MissingCookieError {
@@ -56,15 +77,45 @@ export function isMissingCookieError(error: unknown): error is MissingCookieErro
 }
 
 function getZhihuCookie() {
-  const value = vscode.workspace
+  return vscode.workspace
     .getConfiguration('zhihuSidebar')
     .get<string>('cookie', '')
     .trim();
-
-  return value;
 }
 
-function mapRecommendationItem(item: ZhihuRecommendationDataItem): ZhihuHotItem | null {
+function getNextPage(
+  paging: ZhihuRecommendationResponse['paging'],
+  currentPage: number,
+  itemCount: number
+) {
+  if (paging?.is_end) {
+    return null;
+  }
+
+  const nextUrl = paging?.next;
+
+  if (!nextUrl) {
+    return itemCount > 0 ? currentPage + 1 : null;
+  }
+
+  try {
+    const url = new URL(nextUrl);
+    const nextPage = url.searchParams.get('page_number');
+
+    if (!nextPage) {
+      return itemCount > 0 ? currentPage + 1 : null;
+    }
+
+    const parsed = Number(nextPage);
+    return Number.isFinite(parsed) ? parsed : null;
+  } catch {
+    return itemCount > 0 ? currentPage + 1 : null;
+  }
+}
+
+function mapRecommendationItem(
+  item: ZhihuRecommendationDataItem
+): ZhihuRecommendationItem | null {
   const target = item.target;
 
   if (!target) {
@@ -78,10 +129,20 @@ function mapRecommendationItem(item: ZhihuRecommendationDataItem): ZhihuHotItem 
   }
 
   const excerpt =
-    target.excerpt?.trim() ||
-    target.question?.excerpt?.trim() ||
-    target.author?.headline?.trim() ||
+    cleanText(target.excerpt) ||
+    cleanText(target.question?.excerpt) ||
+    cleanText(target.author?.headline) ||
     '知乎推荐内容';
+
+  const detail =
+    cleanText(target.content) ||
+    cleanText(target.excerpt) ||
+    cleanText(target.question?.detail) ||
+    cleanText(target.question?.excerpt) ||
+    excerpt;
+
+  const author = cleanText(target.author?.name) || '未知作者';
+  const authorHeadline = cleanText(target.author?.headline) || '';
 
   const urlFromTarget = target.url?.trim() || target.question?.url?.trim();
   const url =
@@ -94,18 +155,42 @@ function mapRecommendationItem(item: ZhihuRecommendationDataItem): ZhihuHotItem 
     return null;
   }
 
+  const id =
+    String(target.id || item.id || url).trim();
+
   return {
+    id,
     title,
     excerpt,
+    detail,
+    author,
+    authorHeadline,
     url
   };
 }
 
-function requestZhihuRecommendation(cookie: string): Promise<ZhihuRecommendationResponse> {
+function cleanText(value: string | undefined) {
+  if (!value) {
+    return '';
+  }
+
+  return value
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function requestZhihuRecommendation(
+  cookie: string,
+  page: number
+): Promise<ZhihuRecommendationResponse> {
   return new Promise((resolve, reject) => {
-    // 这里不用 Node 自己发 HTTPS，而是复用系统 curl。
-    // 原因是你本机 curl 已经能连通知乎，但扩展宿主里的 Node TLS 握手失败。
-    // 这样改动最小，也最贴近你当前机器的真实网络环境。
     execFile(
       'curl',
       [
@@ -121,7 +206,7 @@ function requestZhihuRecommendation(cookie: string): Promise<ZhihuRecommendation
         'Accept: application/json, text/plain, */*',
         '-H',
         'X-Requested-With: fetch',
-        RECOMMENDATION_API_URL
+        `${RECOMMENDATION_API_URL}?desktop=true&page_number=${page}`
       ],
       {
         maxBuffer: 1024 * 1024 * 3
@@ -155,6 +240,10 @@ function requestZhihuRecommendation(cookie: string): Promise<ZhihuRecommendation
 
 interface ZhihuRecommendationResponse {
   data?: ZhihuRecommendationDataItem[];
+  paging?: {
+    next?: string;
+    is_end?: boolean;
+  };
   error?: {
     code?: number;
     name?: string;
@@ -163,17 +252,22 @@ interface ZhihuRecommendationResponse {
 }
 
 interface ZhihuRecommendationDataItem {
+  id?: string | number;
   target?: {
+    id?: string | number;
     title?: string;
     excerpt?: string;
+    content?: string;
     url?: string;
     author?: {
+      name?: string;
       headline?: string;
     };
     question?: {
       id?: number | string;
       title?: string;
       excerpt?: string;
+      detail?: string;
       url?: string;
     };
   };

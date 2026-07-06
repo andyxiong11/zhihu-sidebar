@@ -1,10 +1,14 @@
 import * as vscode from 'vscode';
-import { getZhihuHotList, isMissingCookieError } from './zhihuService';
+import {
+  clearZhihuRecommendationCache,
+  getZhihuRecommendationPage,
+  isMissingCookieError
+} from './zhihuService';
 
 export class ZhihuViewProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
-
-  constructor() {}
+  private nextPage: number | null = 1;
+  private isLoading = false;
 
   public resolveWebviewView(view: vscode.WebviewView) {
     this.view = view;
@@ -16,18 +20,16 @@ export class ZhihuViewProvider implements vscode.WebviewViewProvider {
     view.webview.html = this.getHtml();
 
     view.webview.onDidReceiveMessage(async (message: unknown) => {
-      // Webview 发消息给扩展宿主时，会进入这里。
-      // 这是 VSCode 插件里最常见的通信方式之一。
       if (!this.isValidMessage(message)) {
         return;
       }
 
       if (message.type === 'ready' || message.type === 'refresh') {
-        await this.loadData();
+        await this.refresh();
       }
 
-      if (message.type === 'open') {
-        await vscode.env.openExternal(vscode.Uri.parse(message.url));
+      if (message.type === 'loadMore') {
+        await this.loadMore();
       }
 
       if (message.type === 'openSettings') {
@@ -40,64 +42,109 @@ export class ZhihuViewProvider implements vscode.WebviewViewProvider {
   }
 
   public async refresh() {
-    await this.loadData();
+    clearZhihuRecommendationCache();
+    this.nextPage = 1;
+    await this.loadPage(true);
   }
 
-  private async loadData() {
-    if (!this.view) {
+  private async loadMore() {
+    if (this.nextPage === null) {
+      this.postMessage({
+        type: 'loadingState',
+        payload: {
+          isLoading: false,
+          hasMore: false
+        }
+      });
       return;
     }
 
+    await this.loadPage(false);
+  }
+
+  private async loadPage(replace: boolean) {
+    if (!this.view || this.isLoading || this.nextPage === null) {
+      return;
+    }
+
+    this.isLoading = true;
+    this.postMessage({
+      type: 'loadingState',
+      payload: {
+        isLoading: true,
+        hasMore: true
+      }
+    });
+
     try {
-      const list = await getZhihuHotList();
-      this.view.webview.postMessage({
+      const pageToLoad = replace ? 1 : this.nextPage;
+
+      if (pageToLoad === null) {
+        return;
+      }
+
+      const page = await getZhihuRecommendationPage(pageToLoad);
+      this.nextPage = page.nextPage;
+
+      this.postMessage({
         type: 'data',
-        payload: list
+        payload: {
+          items: page.items,
+          replace,
+          hasMore: this.nextPage !== null
+        }
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : '未知错误';
 
       if (isMissingCookieError(error)) {
-        this.view.webview.postMessage({
+        this.postMessage({
           type: 'missingCookie',
           payload: message
         });
         return;
       }
 
-      this.view.webview.postMessage({
+      this.postMessage({
         type: 'error',
         payload: message
       });
+    } finally {
+      this.isLoading = false;
+      this.postMessage({
+        type: 'loadingState',
+        payload: {
+          isLoading: false,
+          hasMore: this.nextPage !== null
+        }
+      });
     }
+  }
+
+  private postMessage(message: unknown) {
+    this.view?.webview.postMessage(message);
   }
 
   private isValidMessage(
     message: unknown
   ): message is
-    | { type: 'ready' | 'refresh' }
-    | { type: 'open'; url: string }
+    | { type: 'ready' | 'refresh' | 'loadMore' }
     | { type: 'openSettings' } {
     if (!message || typeof message !== 'object') {
       return false;
     }
 
-    const candidate = message as { type?: unknown; url?: unknown };
+    const candidate = message as { type?: unknown };
 
-    if (candidate.type === 'ready' || candidate.type === 'refresh') {
-      return true;
-    }
-
-    if (candidate.type === 'openSettings') {
-      return true;
-    }
-
-    return candidate.type === 'open' && typeof candidate.url === 'string';
+    return (
+      candidate.type === 'ready' ||
+      candidate.type === 'refresh' ||
+      candidate.type === 'loadMore' ||
+      candidate.type === 'openSettings'
+    );
   }
 
   private getHtml() {
-    // 这里直接返回一段 HTML。
-    // 对新手来说，这样最容易理解：扩展负责准备页面，页面自己负责展示数据。
     return `<!DOCTYPE html>
 <html lang="zh-CN">
   <head>
@@ -115,6 +162,7 @@ export class ZhihuViewProvider implements vscode.WebviewViewProvider {
       .toolbar {
         position: sticky;
         top: 0;
+        z-index: 1;
         display: flex;
         justify-content: space-between;
         align-items: center;
@@ -141,6 +189,13 @@ export class ZhihuViewProvider implements vscode.WebviewViewProvider {
         background: var(--vscode-button-hoverBackground);
       }
 
+      .button-link {
+        background: transparent;
+        border: none;
+        color: var(--vscode-textLink-foreground);
+        padding: 0;
+      }
+
       .list {
         padding: 8px 12px 16px;
       }
@@ -159,12 +214,47 @@ export class ZhihuViewProvider implements vscode.WebviewViewProvider {
 
       .item-meta {
         font-size: 12px;
-        opacity: 0.8;
+        opacity: 0.85;
         margin-bottom: 8px;
+        line-height: 1.6;
+      }
+
+      .item-author {
+        font-size: 12px;
+        opacity: 0.75;
+        margin-bottom: 8px;
+      }
+
+      .item-detail {
+        display: none;
+        margin-top: 8px;
+        padding: 10px;
+        border-radius: 6px;
+        background: var(--vscode-textBlockQuote-background);
+        font-size: 12px;
+        line-height: 1.7;
+        white-space: pre-wrap;
+      }
+
+      .item-detail.is-expanded {
+        display: block;
+      }
+
+      .item-actions {
+        display: flex;
+        align-items: center;
+        gap: 12px;
       }
 
       .empty {
         padding: 16px 12px;
+        font-size: 12px;
+        opacity: 0.8;
+      }
+
+      .footer {
+        padding: 12px;
+        text-align: center;
         font-size: 12px;
         opacity: 0.8;
       }
@@ -176,11 +266,19 @@ export class ZhihuViewProvider implements vscode.WebviewViewProvider {
       <button id="refreshButton" class="button">刷新</button>
     </div>
     <div id="app" class="empty">加载中...</div>
+    <div id="footer" class="footer" hidden>向下滚动以加载更多</div>
 
     <script>
       const vscode = acquireVsCodeApi();
       const app = document.getElementById('app');
+      const footer = document.getElementById('footer');
       const refreshButton = document.getElementById('refreshButton');
+
+      const state = {
+        items: [],
+        isLoading: false,
+        hasMore: true
+      };
 
       function escapeHtml(text) {
         return String(text)
@@ -191,40 +289,70 @@ export class ZhihuViewProvider implements vscode.WebviewViewProvider {
           .replaceAll("'", '&#39;');
       }
 
-      function renderList(items) {
-        if (!Array.isArray(items) || items.length === 0) {
+      function truncate(text, maxLength) {
+        if (text.length <= maxLength) {
+          return text;
+        }
+
+        return text.slice(0, maxLength) + '...';
+      }
+
+      function renderList() {
+        if (!Array.isArray(state.items) || state.items.length === 0) {
           app.className = 'empty';
-          app.innerHTML = '当前没有可展示的知乎内容。';
+          app.textContent = state.isLoading ? '加载中...' : '当前没有可展示的知乎内容。';
+          footer.hidden = true;
           return;
         }
 
         app.className = 'list';
-        app.innerHTML = items.map((item, index) => {
+        app.innerHTML = state.items.map((item, index) => {
           const title = escapeHtml(item.title);
-          const excerpt = escapeHtml(item.excerpt || '');
-          const url = escapeHtml(item.url);
+          const excerpt = escapeHtml(truncate(item.excerpt || '', 120));
+          const detail = escapeHtml(item.detail || item.excerpt || '');
+          const author = escapeHtml(item.author || '未知作者');
+          const authorHeadline = escapeHtml(item.authorHeadline || '');
+          const detailId = 'detail-' + index;
 
           return \`
             <div class="item">
               <div class="item-title">\${index + 1}. \${title}</div>
+              <div class="item-author">\${author}\${authorHeadline ? ' · ' + authorHeadline : ''}</div>
               <div class="item-meta">\${excerpt}</div>
-              <button class="button open-button" data-url="\${url}">打开知乎</button>
+              <div class="item-actions">
+                <button class="button toggle-button" data-detail-id="\${detailId}">展开</button>
+              </div>
+              <div class="item-detail" id="\${detailId}">\${detail}</div>
             </div>
           \`;
         }).join('');
 
-        document.querySelectorAll('.open-button').forEach((button) => {
-          button.addEventListener('click', () => {
-            const url = button.getAttribute('data-url');
+        bindToggleButtons();
+        footer.hidden = false;
+        footer.textContent = state.isLoading
+          ? '正在加载更多...'
+          : state.hasMore
+            ? '向下滚动以加载更多'
+            : '已经到底了';
+      }
 
-            if (!url) {
+      function bindToggleButtons() {
+        document.querySelectorAll('.toggle-button').forEach((button) => {
+          button.addEventListener('click', () => {
+            const detailId = button.getAttribute('data-detail-id');
+
+            if (!detailId) {
               return;
             }
 
-            vscode.postMessage({
-              type: 'open',
-              url
-            });
+            const detail = document.getElementById(detailId);
+
+            if (!detail) {
+              return;
+            }
+
+            const expanded = detail.classList.toggle('is-expanded');
+            button.textContent = expanded ? '收起' : '展开';
           });
         });
       }
@@ -237,6 +365,7 @@ export class ZhihuViewProvider implements vscode.WebviewViewProvider {
             <button id="openSettingsButton" class="button">打开设置填写 Cookie</button>
           </div>
         \`;
+        footer.hidden = true;
 
         const openSettingsButton = document.getElementById('openSettingsButton');
         openSettingsButton?.addEventListener('click', () => {
@@ -244,11 +373,51 @@ export class ZhihuViewProvider implements vscode.WebviewViewProvider {
         });
       }
 
+      function mergeItems(existingItems, incomingItems) {
+        const map = new Map();
+
+        existingItems.concat(incomingItems).forEach((item) => {
+          map.set(item.id, item);
+        });
+
+        return Array.from(map.values());
+      }
+
+      function maybeLoadMore() {
+        const scrollBottom = window.scrollY + window.innerHeight;
+        const threshold = document.body.scrollHeight - 160;
+
+        if (scrollBottom < threshold) {
+          return;
+        }
+
+        if (state.isLoading || !state.hasMore) {
+          return;
+        }
+
+        state.isLoading = true;
+        renderList();
+        vscode.postMessage({ type: 'loadMore' });
+      }
+
       window.addEventListener('message', (event) => {
         const message = event.data;
 
         if (message.type === 'data') {
-          renderList(message.payload);
+          const payload = message.payload || {};
+          const incomingItems = Array.isArray(payload.items) ? payload.items : [];
+
+          state.items = payload.replace
+            ? incomingItems
+            : mergeItems(state.items, incomingItems);
+          state.hasMore = Boolean(payload.hasMore);
+          renderList();
+        }
+
+        if (message.type === 'loadingState') {
+          state.isLoading = Boolean(message.payload?.isLoading);
+          state.hasMore = Boolean(message.payload?.hasMore);
+          renderList();
         }
 
         if (message.type === 'missingCookie') {
@@ -258,16 +427,19 @@ export class ZhihuViewProvider implements vscode.WebviewViewProvider {
         if (message.type === 'error') {
           app.className = 'empty';
           app.textContent = '加载失败：' + message.payload;
+          footer.hidden = true;
         }
       });
 
       refreshButton.addEventListener('click', () => {
-        app.className = 'empty';
-        app.textContent = '刷新中...';
+        state.items = [];
+        state.isLoading = true;
+        state.hasMore = true;
+        renderList();
         vscode.postMessage({ type: 'refresh' });
       });
 
-      // Webview 初始化完成后，主动通知扩展去加载数据。
+      window.addEventListener('scroll', maybeLoadMore, { passive: true });
       vscode.postMessage({ type: 'ready' });
     </script>
   </body>

@@ -1,7 +1,7 @@
 {
   "name": "zhihu-sidebar",
   "displayName": "Zhihu Sidebar",
-  "description": "在 VSCode 底部面板中查看知乎热榜内容。",
+  "description": "在 VSCode 底部面板中查看知乎推荐内容。",
   "version": "0.0.1",
   "publisher": "local",
   "license": "UNLICENSED",
@@ -40,7 +40,7 @@
       "zhihuSidebar": [
         {
           "id": "zhihuSidebar.view",
-          "name": "知乎热榜",
+          "name": "知乎推荐",
           "type": "webview"
         }
       ]
