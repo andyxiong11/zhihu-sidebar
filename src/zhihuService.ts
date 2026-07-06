@@ -9,6 +9,25 @@ export interface ZhihuRecommendationItem {
   author: string;
   authorHeadline: string;
   url: string;
+  voteupCount: number;
+  commentCount: number;
+  favorCount: number;
+  canVote: boolean;
+  canComment: boolean;
+  comments: ZhihuCommentItem[];
+  actionState: {
+    liked: boolean;
+    disliked: boolean;
+    favored: boolean;
+  };
+}
+
+export interface ZhihuCommentItem {
+  id: string;
+  author: string;
+  content: string;
+  voteCount: number;
+  createdAtText: string;
 }
 
 export interface ZhihuRecommendationPage {
@@ -165,8 +184,71 @@ function mapRecommendationItem(
     detail,
     author,
     authorHeadline,
-    url
+    url,
+    voteupCount: normalizeCount(target.voteup_count),
+    commentCount: normalizeCount(target.comment_count),
+    favorCount: normalizeCount(target.favlists_count),
+    canVote: true,
+    canComment: true,
+    comments: buildMockComments(target),
+    actionState: {
+      liked: false,
+      disliked: false,
+      favored: false
+    }
   };
+}
+
+function normalizeCount(value: number | string | undefined) {
+  const count = Number(value);
+  return Number.isFinite(count) ? count : 0;
+}
+
+function buildMockComments(target: ZhihuRecommendationDataItem['target']): ZhihuCommentItem[] {
+  const comments = target?.preview_comments;
+
+  if (!Array.isArray(comments) || comments.length === 0) {
+    return [];
+  }
+
+  return comments
+    .map((comment, index) => {
+      const content = cleanText(comment.content);
+
+      if (!content) {
+        return null;
+      }
+
+      return {
+        id: String(comment.id || index),
+        author: cleanText(comment.author?.name) || '匿名用户',
+        content,
+        voteCount: normalizeCount(comment.vote_count),
+        createdAtText: formatTimestamp(comment.created_time)
+      };
+    })
+    .filter((comment): comment is ZhihuCommentItem => comment !== null);
+}
+
+function formatTimestamp(value: number | string | undefined) {
+  const timestamp = Number(value);
+
+  if (!Number.isFinite(timestamp) || timestamp <= 0) {
+    return '刚刚';
+  }
+
+  const date = new Date(timestamp * 1000);
+
+  if (Number.isNaN(date.getTime())) {
+    return '刚刚';
+  }
+
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hour = String(date.getHours()).padStart(2, '0');
+  const minute = String(date.getMinutes()).padStart(2, '0');
+
+  return `${month}-${day} ${hour}:${minute}`;
 }
 
 function cleanText(value: string | undefined) {
@@ -270,5 +352,17 @@ interface ZhihuRecommendationDataItem {
       detail?: string;
       url?: string;
     };
+    voteup_count?: number | string;
+    comment_count?: number | string;
+    favlists_count?: number | string;
+    preview_comments?: Array<{
+      id?: string | number;
+      content?: string;
+      created_time?: number | string;
+      vote_count?: number | string;
+      author?: {
+        name?: string;
+      };
+    }>;
   };
 }

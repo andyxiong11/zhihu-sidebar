@@ -180,7 +180,7 @@ export class ZhihuViewProvider implements vscode.WebviewViewProvider {
         border: 1px solid var(--vscode-button-border, transparent);
         background: var(--vscode-button-background);
         color: var(--vscode-button-foreground);
-        border-radius: 4px;
+        border-radius: 999px;
         padding: 4px 10px;
         cursor: pointer;
       }
@@ -189,11 +189,16 @@ export class ZhihuViewProvider implements vscode.WebviewViewProvider {
         background: var(--vscode-button-hoverBackground);
       }
 
-      .button-link {
+      .button-muted {
+        border: 1px solid var(--vscode-panel-border);
         background: transparent;
-        border: none;
-        color: var(--vscode-textLink-foreground);
-        padding: 0;
+        color: var(--vscode-foreground);
+      }
+
+      .button-active {
+        background: #0f88eb;
+        color: #fff;
+        border-color: #0f88eb;
       }
 
       .list {
@@ -201,22 +206,22 @@ export class ZhihuViewProvider implements vscode.WebviewViewProvider {
       }
 
       .item {
-        padding: 12px 0;
+        padding: 14px 0;
         border-bottom: 1px solid var(--vscode-panel-border);
       }
 
       .item-title {
-        font-size: 13px;
-        font-weight: 600;
-        line-height: 1.5;
-        margin-bottom: 6px;
+        font-size: 14px;
+        font-weight: 700;
+        line-height: 1.55;
+        margin-bottom: 8px;
       }
 
       .item-meta {
         font-size: 12px;
-        opacity: 0.85;
-        margin-bottom: 8px;
-        line-height: 1.6;
+        opacity: 0.9;
+        margin-bottom: 10px;
+        line-height: 1.75;
       }
 
       .item-author {
@@ -227,12 +232,10 @@ export class ZhihuViewProvider implements vscode.WebviewViewProvider {
 
       .item-detail {
         display: none;
-        margin-top: 8px;
-        padding: 10px;
-        border-radius: 6px;
-        background: var(--vscode-textBlockQuote-background);
+        margin-top: 10px;
+        padding-top: 8px;
         font-size: 12px;
-        line-height: 1.7;
+        line-height: 1.8;
         white-space: pre-wrap;
       }
 
@@ -243,7 +246,65 @@ export class ZhihuViewProvider implements vscode.WebviewViewProvider {
       .item-actions {
         display: flex;
         align-items: center;
-        gap: 12px;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .action-link {
+        border: none;
+        background: transparent;
+        color: var(--vscode-descriptionForeground);
+        padding: 4px 0;
+        cursor: pointer;
+      }
+
+      .action-link:hover {
+        color: var(--vscode-textLink-foreground);
+      }
+
+      .comments {
+        display: none;
+        margin-top: 10px;
+        border-top: 1px solid var(--vscode-panel-border);
+        padding-top: 10px;
+      }
+
+      .comments.is-expanded {
+        display: block;
+      }
+
+      .comment-item {
+        padding: 10px 0;
+        border-bottom: 1px solid var(--vscode-panel-border);
+      }
+
+      .comment-author {
+        font-size: 12px;
+        font-weight: 600;
+        margin-bottom: 4px;
+      }
+
+      .comment-content {
+        font-size: 12px;
+        line-height: 1.7;
+        margin-bottom: 6px;
+      }
+
+      .comment-meta {
+        font-size: 11px;
+        opacity: 0.75;
+      }
+
+      .comment-empty {
+        font-size: 12px;
+        opacity: 0.8;
+        padding: 6px 0;
+      }
+
+      .pending-tip {
+        margin-top: 8px;
+        font-size: 11px;
+        color: var(--vscode-descriptionForeground);
       }
 
       .empty {
@@ -297,6 +358,16 @@ export class ZhihuViewProvider implements vscode.WebviewViewProvider {
         return text.slice(0, maxLength) + '...';
       }
 
+      function formatCount(count) {
+        const value = Number(count || 0);
+
+        if (value >= 10000) {
+          return (value / 10000).toFixed(value >= 100000 ? 0 : 1) + '万';
+        }
+
+        return String(value);
+      }
+
       function renderList() {
         if (!Array.isArray(state.items) || state.items.length === 0) {
           app.className = 'empty';
@@ -313,21 +384,75 @@ export class ZhihuViewProvider implements vscode.WebviewViewProvider {
           const author = escapeHtml(item.author || '未知作者');
           const authorHeadline = escapeHtml(item.authorHeadline || '');
           const detailId = 'detail-' + index;
+          const commentsId = 'comments-' + index;
+          const comments = Array.isArray(item.comments) ? item.comments : [];
+          const commentsHtml = comments.length > 0
+            ? comments.map((comment) => {
+                return (
+                  '<div class="comment-item">' +
+                    '<div class="comment-author">' + escapeHtml(comment.author) + '</div>' +
+                    '<div class="comment-content">' + escapeHtml(comment.content) + '</div>' +
+                    '<div class="comment-meta">' +
+                      escapeHtml(comment.createdAtText) + ' · 赞同 ' + formatCount(comment.voteCount) +
+                    '</div>' +
+                  '</div>'
+                );
+              }).join('')
+            : '<div class="comment-empty">当前接口没有返回评论预览，后续接入真实评论接口后这里会显示完整评论列表。</div>';
 
           return \`
-            <div class="item">
+            <div class="item" data-item-id="\${escapeHtml(item.id)}">
               <div class="item-title">\${index + 1}. \${title}</div>
               <div class="item-author">\${author}\${authorHeadline ? ' · ' + authorHeadline : ''}</div>
               <div class="item-meta">\${excerpt}</div>
               <div class="item-actions">
-                <button class="button toggle-button" data-detail-id="\${detailId}">展开</button>
+                <button
+                  class="button \${item.actionState?.liked ? 'button-active' : ''}"
+                  data-action="like"
+                  data-item-id="\${escapeHtml(item.id)}"
+                >
+                  赞同 \${formatCount(item.voteupCount)}
+                </button>
+                <button
+                  class="button button-muted \${item.actionState?.disliked ? 'button-active' : ''}"
+                  data-action="dislike"
+                  data-item-id="\${escapeHtml(item.id)}"
+                >
+                  反对
+                </button>
+                <button
+                  class="button button-muted \${item.actionState?.favored ? 'button-active' : ''}"
+                  data-action="favor"
+                  data-item-id="\${escapeHtml(item.id)}"
+                >
+                  喜欢 \${formatCount(item.favorCount)}
+                </button>
+                <button
+                  class="action-link"
+                  data-action="toggle-comments"
+                  data-item-id="\${escapeHtml(item.id)}"
+                  data-comments-id="\${commentsId}"
+                >
+                  \${formatCount(item.commentCount)} 条评论
+                </button>
+                <button
+                  class="action-link"
+                  data-action="toggle-detail"
+                  data-detail-id="\${detailId}"
+                >
+                  展开
+                </button>
               </div>
               <div class="item-detail" id="\${detailId}">\${detail}</div>
+              <div class="comments" id="\${commentsId}">
+                \${commentsHtml}
+                <div class="pending-tip">当前赞同 / 反对 / 喜欢 / 评论展开是本地交互版，等你抓到真实接口后我再帮你接成真正写回知乎。</div>
+              </div>
             </div>
           \`;
         }).join('');
 
-        bindToggleButtons();
+        bindItemButtons();
         footer.hidden = false;
         footer.textContent = state.isLoading
           ? '正在加载更多...'
@@ -336,8 +461,8 @@ export class ZhihuViewProvider implements vscode.WebviewViewProvider {
             : '已经到底了';
       }
 
-      function bindToggleButtons() {
-        document.querySelectorAll('.toggle-button').forEach((button) => {
+      function bindItemButtons() {
+        document.querySelectorAll('[data-action="toggle-detail"]').forEach((button) => {
           button.addEventListener('click', () => {
             const detailId = button.getAttribute('data-detail-id');
 
@@ -355,6 +480,101 @@ export class ZhihuViewProvider implements vscode.WebviewViewProvider {
             button.textContent = expanded ? '收起' : '展开';
           });
         });
+
+        document.querySelectorAll('[data-action="toggle-comments"]').forEach((button) => {
+          button.addEventListener('click', () => {
+            const commentsId = button.getAttribute('data-comments-id');
+
+            if (!commentsId) {
+              return;
+            }
+
+            const comments = document.getElementById(commentsId);
+
+            if (!comments) {
+              return;
+            }
+
+            const expanded = comments.classList.toggle('is-expanded');
+            button.textContent = expanded ? '收起评论' : getCommentLabel(button.getAttribute('data-item-id'));
+          });
+        });
+
+        document.querySelectorAll('[data-action="like"]').forEach((button) => {
+          button.addEventListener('click', () => {
+            updateActionState(button.getAttribute('data-item-id'), 'like');
+          });
+        });
+
+        document.querySelectorAll('[data-action="dislike"]').forEach((button) => {
+          button.addEventListener('click', () => {
+            updateActionState(button.getAttribute('data-item-id'), 'dislike');
+          });
+        });
+
+        document.querySelectorAll('[data-action="favor"]').forEach((button) => {
+          button.addEventListener('click', () => {
+            updateActionState(button.getAttribute('data-item-id'), 'favor');
+          });
+        });
+      }
+
+      function updateActionState(itemId, actionType) {
+        if (!itemId) {
+          return;
+        }
+
+        state.items = state.items.map((item) => {
+          if (item.id !== itemId) {
+            return item;
+          }
+
+          const nextItem = {
+            ...item,
+            actionState: {
+              ...item.actionState
+            }
+          };
+
+          if (actionType === 'like') {
+            const nextLiked = !nextItem.actionState.liked;
+            nextItem.actionState.liked = nextLiked;
+
+            if (nextLiked && nextItem.actionState.disliked) {
+              nextItem.actionState.disliked = false;
+            }
+
+            nextItem.voteupCount += nextLiked ? 1 : -1;
+          }
+
+          if (actionType === 'dislike') {
+            const nextDisliked = !nextItem.actionState.disliked;
+            nextItem.actionState.disliked = nextDisliked;
+
+            if (nextDisliked && nextItem.actionState.liked) {
+              nextItem.actionState.liked = false;
+              nextItem.voteupCount = Math.max(0, nextItem.voteupCount - 1);
+            }
+          }
+
+          if (actionType === 'favor') {
+            const nextFavored = !nextItem.actionState.favored;
+            nextItem.actionState.favored = nextFavored;
+            nextItem.favorCount += nextFavored ? 1 : -1;
+          }
+
+          nextItem.voteupCount = Math.max(0, nextItem.voteupCount);
+          nextItem.favorCount = Math.max(0, nextItem.favorCount);
+
+          return nextItem;
+        });
+
+        renderList();
+      }
+
+      function getCommentLabel(itemId) {
+        const item = state.items.find((entry) => entry.id === itemId);
+        return item ? \`\${formatCount(item.commentCount)} 条评论\` : '评论';
       }
 
       function renderMissingCookie(message) {
