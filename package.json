@@ -21,6 +21,10 @@
       {
         "command": "zhihuSidebar.refresh",
         "title": "刷新知乎内容"
+      },
+      {
+        "command": "zhihuSidebar.openSettings",
+        "title": "打开知乎插件设置"
       }
     ],
     "viewsContainers": {
@@ -40,6 +44,17 @@
           "type": "webview"
         }
       ]
+    },
+    "configuration": {
+      "title": "Zhihu Sidebar",
+      "properties": {
+        "zhihuSidebar.cookie": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "知乎请求使用的 Cookie。请在已登录知乎的浏览器开发者工具里复制完整的 `Cookie` 请求头内容粘贴到这里。",
+          "scope": "application"
+        }
+      }
     }
   },
   "scripts": {

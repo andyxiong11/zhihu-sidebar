@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { getZhihuHotList } from './zhihuService';
+import { getZhihuHotList, isMissingCookieError } from './zhihuService';
 
 export class ZhihuViewProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
@@ -29,6 +29,13 @@ export class ZhihuViewProvider implements vscode.WebviewViewProvider {
       if (message.type === 'open') {
         await vscode.env.openExternal(vscode.Uri.parse(message.url));
       }
+
+      if (message.type === 'openSettings') {
+        await vscode.commands.executeCommand(
+          'workbench.action.openSettings',
+          'zhihuSidebar.cookie'
+        );
+      }
     });
   }
 
@@ -50,6 +57,14 @@ export class ZhihuViewProvider implements vscode.WebviewViewProvider {
     } catch (error) {
       const message = error instanceof Error ? error.message : '未知错误';
 
+      if (isMissingCookieError(error)) {
+        this.view.webview.postMessage({
+          type: 'missingCookie',
+          payload: message
+        });
+        return;
+      }
+
       this.view.webview.postMessage({
         type: 'error',
         payload: message
@@ -61,7 +76,8 @@ export class ZhihuViewProvider implements vscode.WebviewViewProvider {
     message: unknown
   ): message is
     | { type: 'ready' | 'refresh' }
-    | { type: 'open'; url: string } {
+    | { type: 'open'; url: string }
+    | { type: 'openSettings' } {
     if (!message || typeof message !== 'object') {
       return false;
     }
@@ -69,6 +85,10 @@ export class ZhihuViewProvider implements vscode.WebviewViewProvider {
     const candidate = message as { type?: unknown; url?: unknown };
 
     if (candidate.type === 'ready' || candidate.type === 'refresh') {
+      return true;
+    }
+
+    if (candidate.type === 'openSettings') {
       return true;
     }
 
@@ -152,7 +172,7 @@ export class ZhihuViewProvider implements vscode.WebviewViewProvider {
   </head>
   <body>
     <div class="toolbar">
-      <div class="title">知乎热榜</div>
+      <div class="title">知乎推荐</div>
       <button id="refreshButton" class="button">刷新</button>
     </div>
     <div id="app" class="empty">加载中...</div>
@@ -209,11 +229,30 @@ export class ZhihuViewProvider implements vscode.WebviewViewProvider {
         });
       }
 
+      function renderMissingCookie(message) {
+        app.className = 'empty';
+        app.innerHTML = \`
+          <div style="line-height:1.7;">
+            <div style="margin-bottom:8px;">\${escapeHtml(message)}</div>
+            <button id="openSettingsButton" class="button">打开设置填写 Cookie</button>
+          </div>
+        \`;
+
+        const openSettingsButton = document.getElementById('openSettingsButton');
+        openSettingsButton?.addEventListener('click', () => {
+          vscode.postMessage({ type: 'openSettings' });
+        });
+      }
+
       window.addEventListener('message', (event) => {
         const message = event.data;
 
         if (message.type === 'data') {
           renderList(message.payload);
+        }
+
+        if (message.type === 'missingCookie') {
+          renderMissingCookie(message.payload);
         }
 
         if (message.type === 'error') {
