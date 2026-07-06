@@ -1,7 +1,20 @@
 import * as vscode from 'vscode';
 import { execFile } from 'node:child_process';
 
+// 这个文件只负责一件事：和“知乎数据”打交道。
+// 也就是说：
+// - 去哪里请求
+// - 请求完怎么转成我们自己的数据结构
+// - 缓存怎么处理
+// 都放在这里。
+//
+// 这样做好处是：后面你要自己接真实点赞/评论接口时，
+// 基本只需要改这个文件，不需要同时去改 Webview UI。
+
 export interface ZhihuRecommendationItem {
+  // 这是我们“最终喂给前端页面”的一条推荐卡片结构。
+  // 不一定和知乎原始接口长得一样。
+  // 这里是我们整理后的“前端友好数据”。
   id: string;
   title: string;
   excerpt: string;
@@ -23,6 +36,7 @@ export interface ZhihuRecommendationItem {
 }
 
 export interface ZhihuCommentItem {
+  // 评论区展示用的最小结构。
   id: string;
   author: string;
   content: string;
@@ -39,6 +53,9 @@ const RECOMMENDATION_API_URL =
   'https://www.zhihu.com/api/v3/feed/topstory/recommend';
 const CACHE_TTL = 5 * 60 * 1000;
 
+// 分页缓存。
+// key 是页码，value 是这一页的数据和缓存时间。
+// 这样向下滚动加载更多时，不会反复请求同一页。
 const pageCache = new Map<number, { data: ZhihuRecommendationPage; cachedAt: number }>();
 
 export class MissingCookieError extends Error {
@@ -51,12 +68,14 @@ export class MissingCookieError extends Error {
 export async function getZhihuRecommendationPage(
   page: number
 ): Promise<ZhihuRecommendationPage> {
+  // 1. 先拿到你在 VSCode 设置里填写的知乎 Cookie
   const cookie = getZhihuCookie();
 
   if (!cookie) {
     throw new MissingCookieError();
   }
 
+  // 2. 看这一页是不是已经缓存过，而且还没过期
   const cached = pageCache.get(page);
   const now = Date.now();
 
@@ -64,12 +83,14 @@ export async function getZhihuRecommendationPage(
     return cached.data;
   }
 
+  // 3. 真正发请求拿原始数据
   const raw = await requestZhihuRecommendation(cookie, page);
 
   if (raw.error) {
     throw new Error(raw.error.message || '知乎接口返回了错误。');
   }
 
+  // 4. 把知乎原始结构整理成我们自己的前端结构
   const items = (raw.data || [])
     .map(mapRecommendationItem)
     .filter((item): item is ZhihuRecommendationItem => item !== null);
@@ -88,14 +109,18 @@ export async function getZhihuRecommendationPage(
 }
 
 export function clearZhihuRecommendationCache() {
+  // 手动刷新时会调用这个方法，把旧分页缓存全部清掉。
   pageCache.clear();
 }
 
 export function isMissingCookieError(error: unknown): error is MissingCookieError {
+  // 这个函数是一个 TypeScript 类型守卫。
+  // 作用是：帮助调用方判断“当前错误是不是没配 Cookie 导致的”。
   return error instanceof MissingCookieError;
 }
 
 function getZhihuCookie() {
+  // 从 VSCode 配置系统里读我们自己的配置项。
   return vscode.workspace
     .getConfiguration('zhihuSidebar')
     .get<string>('cookie', '')
@@ -107,6 +132,12 @@ function getNextPage(
   currentPage: number,
   itemCount: number
 ) {
+  // 这个函数的任务是算出“下一页页码”。
+  //
+  // 优先级：
+  // 1. 如果接口明确说已经到底了，就返回 null
+  // 2. 如果接口给了 next 链接，就从 next 链接里解析 page_number
+  // 3. 如果接口没给，但这一页还有内容，就保守地猜下一页是 currentPage + 1
   if (paging?.is_end) {
     return null;
   }
@@ -135,6 +166,8 @@ function getNextPage(
 function mapRecommendationItem(
   item: ZhihuRecommendationDataItem
 ): ZhihuRecommendationItem | null {
+  // 这里是“接口数据 -> 前端卡片数据”的核心转换逻辑。
+  // 以后你自己接真实写接口、评论接口时，最值得重点看的就是这种“映射层”。
   const target = item.target;
 
   if (!target) {
@@ -178,6 +211,8 @@ function mapRecommendationItem(
     String(target.id || item.id || url).trim();
 
   return {
+    // 这里返回的是前端真正使用的统一结构。
+    // 这样 Webview 不用关心知乎原始字段到底叫什么。
     id,
     title,
     excerpt,
@@ -200,11 +235,15 @@ function mapRecommendationItem(
 }
 
 function normalizeCount(value: number | string | undefined) {
+  // 很多接口里的数字可能是 number，也可能是 string，甚至是 undefined。
+  // 这里统一转成安全的 number。
   const count = Number(value);
   return Number.isFinite(count) ? count : 0;
 }
 
 function buildMockComments(target: ZhihuRecommendationDataItem['target']): ZhihuCommentItem[] {
+  // 当前评论区先展示接口里可能带回来的 preview_comments。
+  // 后面你接“真实评论列表接口”时，可以把这个函数替换掉。
   const comments = target?.preview_comments;
 
   if (!Array.isArray(comments) || comments.length === 0) {
@@ -231,6 +270,7 @@ function buildMockComments(target: ZhihuRecommendationDataItem['target']): Zhihu
 }
 
 function formatTimestamp(value: number | string | undefined) {
+  // 把知乎接口里常见的 Unix 时间戳，转成更适合直接显示的文本。
   const timestamp = Number(value);
 
   if (!Number.isFinite(timestamp) || timestamp <= 0) {
@@ -252,6 +292,8 @@ function formatTimestamp(value: number | string | undefined) {
 }
 
 function cleanText(value: string | undefined) {
+  // 知乎接口里的部分字段可能带 HTML 或 HTML 实体。
+  // 这里做一个最基础的“清洗文本”，方便直接塞进 Webview。
   if (!value) {
     return '';
   }
@@ -273,6 +315,10 @@ function requestZhihuRecommendation(
   page: number
 ): Promise<ZhihuRecommendationResponse> {
   return new Promise((resolve, reject) => {
+    // 这里为什么不用 fetch，而是用 curl：
+    // 之前我们已经遇到过 VSCode 扩展宿主里 TLS 握手失败的问题，
+    // 但系统 curl 是能跑通的。
+    // 所以这里是一个“优先能跑起来”的务实方案。
     execFile(
       'curl',
       [
@@ -294,6 +340,8 @@ function requestZhihuRecommendation(
         maxBuffer: 1024 * 1024 * 3
       },
       (error, stdout, stderr) => {
+        // stdout 是接口成功时的输出内容
+        // stderr 是 curl 的错误输出
         if (error) {
           reject(
             new Error(
@@ -304,6 +352,7 @@ function requestZhihuRecommendation(
         }
 
         try {
+          // 把 curl 输出的 JSON 文本转成 JS 对象。
           const raw = JSON.parse(stdout) as ZhihuRecommendationResponse;
 
           if (raw.error?.code === 101) {
@@ -321,6 +370,8 @@ function requestZhihuRecommendation(
 }
 
 interface ZhihuRecommendationResponse {
+  // 这是“知乎接口原始响应”的近似类型定义。
+  // 注意：它不是完整的官方类型，只是当前项目用到哪些字段，就写哪些字段。
   data?: ZhihuRecommendationDataItem[];
   paging?: {
     next?: string;
@@ -334,6 +385,8 @@ interface ZhihuRecommendationResponse {
 }
 
 interface ZhihuRecommendationDataItem {
+  // 同样，这里描述的是“原始接口单项数据”的一部分。
+  // 你以后自己加接口时，可以继续往这里补字段。
   id?: string | number;
   target?: {
     id?: string | number;
